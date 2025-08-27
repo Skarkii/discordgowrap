@@ -17,11 +17,80 @@ import (
 )
 
 type Session struct {
-	Token      string
-	conn       *websocket.Conn
-	intents    int
-	Bot        bot
-	httpClient *http.Client
+	Token            string
+	conn             *websocket.Conn
+	intents          int
+	Bot              bot
+	httpClient       *http.Client
+	voiceConnections map[string]*voiceConnection
+}
+
+type voiceConnection struct {
+	token     string
+	guildId   string
+	sessionId string
+	endpoint  string
+	channelID string
+	conn      *websocket.Conn
+	intents   int
+	ready     bool
+}
+
+func (v voiceConnection) establishVoiceSocketConnection() {
+	if v.conn != nil {
+		v.conn.Close()
+		v.ready = false
+	}
+	dialer := websocket.DefaultDialer
+	v.conn, _, _ = dialer.Dial(gateway, nil)
+
+	identify := GatewayPayload{
+		Op: OpIdentify,
+		Data: Identify{
+			Token:   v.token,
+			Intents: v.intents,
+			Properties: IdentifyProperties{
+				OS:      "Windows 11",
+				Browser: "DiscordMusicGo",
+				Device:  "DiscordMusicGo",
+			},
+		},
+	}
+	if err := v.conn.WriteJSON(identify); err != nil {
+		log.Printf("Error sending IDENTIFY for voice channel: %v\n", err)
+	}
+
+	go func() {
+		for {
+			var payload GatewayPayload
+			if err := v.conn.ReadJSON(&payload); err != nil {
+				log.Fatalf("Failed to read voice payload: %v\n", err)
+			}
+			switch payload.Op {
+			case OpHello:
+				v.ready = true
+				data := payload.Data.(map[string]interface{})
+				heartbeatInterval := int(data["heartbeat_interval"].(float64))
+				go startHeartbeat(v.conn, heartbeatInterval)
+			}
+			fmt.Println(v.guildId, "payload: ", payload, "")
+		}
+	}()
+}
+
+// Either gets the existing connection or creates a new one if it doesn't exist
+func (s Session) getVoiceConnection(guildId string) voiceConnection {
+	if voice, exists := s.voiceConnections[guildId]; exists {
+		return *voice
+	}
+	return voiceConnection{
+		guildId:   guildId,
+		sessionId: "",
+		endpoint:  "",
+		channelID: "",
+		conn:      nil,
+		token:     s.Token,
+	}
 }
 
 const (
@@ -126,18 +195,64 @@ func (s Session) disconnect() error {
 	return s.conn.WriteJSON(disc)
 }
 
+type VoiceServerUpdate struct {
+	Endpoint string `json:"endpoint"`
+	GuildId  string `json:"guild_id"`
+	Token    string `json:"token"`
+}
+
+type VoiceStateUpdate struct {
+	GuildId   string `json:"guild_id"`
+	ChannelId string `json:"channel_id"`
+	SessionId string `json:"session_id"`
+}
+
 func (s Session) GetMessage() (string, MessageCreate, error) {
 	var msg MessageCreate
 	var payload GatewayPayload
 	if err := s.conn.ReadJSON(&payload); err != nil {
 		return "", msg, err
 	}
-	if payload.Type == "MESSAGE_CREATE" {
+
+	// Ignore heartbeat ACKs
+	if payload.Op == OpHeartbeatACK {
+		return "", msg, nil
+	}
+
+	switch payload.Type {
+	case "MESSAGE_CREATE":
 		data, _ := json.Marshal(payload.Data)
 		if err := json.Unmarshal(data, &msg); err != nil {
-			return "", msg, err
+			return payload.Type, msg, err
 		}
+		return payload.Type, msg, nil
+	case "MESSAGE_UPDATE":
+		return payload.Type, msg, nil
+	case "GUILD_CREATE":
+		return payload.Type, msg, nil
+	case "VOICE_STATE_UPDATE":
+		var vsu VoiceStateUpdate
+		data, _ := json.Marshal(payload.Data)
+		if err := json.Unmarshal(data, &vsu); err != nil {
+			return payload.Type, msg, err
+		}
+		vc := s.getVoiceConnection(vsu.GuildId)
+		vc.sessionId = vsu.SessionId
+		vc.channelID = vsu.ChannelId
+		vc.establishVoiceSocketConnection()
+		return payload.Type, msg, nil
+	case "VOICE_SERVER_UPDATE":
+		var vsu VoiceServerUpdate
+		data, _ := json.Marshal(payload.Data)
+		if err := json.Unmarshal(data, &vsu); err != nil {
+			return payload.Type, msg, err
+		}
+		vc := s.getVoiceConnection(vsu.GuildId)
+		vc.endpoint = vsu.Endpoint
+
+		return payload.Type, msg, nil
 	}
+	log.Printf("Unhandled message type: %s with data: %v\n", payload.Type, payload.Data)
 	return payload.Type, msg, nil
 }
 
@@ -197,6 +312,7 @@ func New(token string, intents int) (*Session, error) {
 		intents,
 		bot{ID: msg.User.ID, Name: msg.User.Name},
 		&http.Client{},
+		make(map[string]*voiceConnection),
 	}
 	//fmt.Printf("Retrieved Ack from Identify, starting heartbeat\n")
 	go startHeartbeat(s.conn, heartbeatInterval)
@@ -216,14 +332,14 @@ func startHeartbeat(conn *websocket.Conn, interval int) {
 	}
 }
 
-type SendMessage struct {
+type sendMessage struct {
 	Content string `json:"content"`
 }
 
 func (s Session) SendMessage(channelID string, content string) error {
-	fmt.Printf("Sending \"%s\"to channel %s\n", content, channelID)
+	fmt.Printf("Sending \"%s\" to channel %s\n", content, channelID)
 	url := fmt.Sprintf("%s/channels/%s/messages", apiBase, channelID)
-	msg := SendMessage{Content: content}
+	msg := sendMessage{Content: content}
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("error marshaling message: %v", err)
@@ -281,7 +397,7 @@ func (s Session) findUserChannelIdInGuild(guildId string, userId string) string 
 		log.Printf("findUserChannelIdInGuild: request error: %v\n", err)
 		return ""
 	}
-	fmt.Println(respBody)
+	fmt.Println("Find user response: ", respBody)
 
 	var vs voiceState
 	if err := json.Unmarshal([]byte(respBody), &vs); err != nil {
