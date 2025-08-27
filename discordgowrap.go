@@ -1,7 +1,7 @@
 /*
 Custom Discord API using websockets. Main focus here is parallel voice channel connections
 */
-package DiscordGowrap
+package discordgowrap
 
 import (
 	"bytes"
