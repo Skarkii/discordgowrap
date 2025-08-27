@@ -1,4 +1,4 @@
-module discordgowrap
+module github.com/skarkii/discordgowrap
 
 go 1.25.0
 
