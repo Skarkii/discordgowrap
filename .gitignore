@@ -1,0 +1,6 @@
+.env
+build
+build/**
+main
+.idea
+message.example
