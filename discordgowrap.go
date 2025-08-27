@@ -36,6 +36,31 @@ type voiceConnection struct {
 	ready     bool
 }
 
+func (s Session) DisconnectFromVoice(guildId string) {
+	fmt.Printf("All voice connections: %v\n", s.voiceConnections)
+	vc := s.getVoiceConnection(guildId)
+	vc.closeVoiceSocketConnection()
+	//delete(s.voiceConnections, guildId)
+	fmt.Printf("All voice connections: %v\n", s.voiceConnections)
+}
+
+func (v voiceConnection) closeVoiceSocketConnection() {
+	disc := GatewayPayload{
+		Op:   OpClose,
+		Data: nil,
+	}
+
+	if v.conn != nil {
+		log.Printf("voice conn is nil")
+		return
+	}
+
+	err := v.conn.WriteJSON(disc)
+	if err != nil {
+		log.Printf("Error sending DISCONNECT for voice channel: %v\n", err)
+	}
+}
+
 func (v voiceConnection) establishVoiceSocketConnection() {
 	if v.conn != nil {
 		v.conn.Close()
@@ -81,9 +106,11 @@ func (v voiceConnection) establishVoiceSocketConnection() {
 // Either gets the existing connection or creates a new one if it doesn't exist
 func (s Session) getVoiceConnection(guildId string) voiceConnection {
 	if voice, exists := s.voiceConnections[guildId]; exists {
+		log.Printf("Found voice connection for guild %s\n", guildId)
 		return *voice
 	}
-	return voiceConnection{
+	log.Printf("Creating new voice connection for", guildId)
+	vc := voiceConnection{
 		guildId:   guildId,
 		sessionId: "",
 		endpoint:  "",
@@ -91,6 +118,8 @@ func (s Session) getVoiceConnection(guildId string) voiceConnection {
 		conn:      nil,
 		token:     s.Token,
 	}
+	s.voiceConnections[guildId] = &vc
+	return vc
 }
 
 const (
