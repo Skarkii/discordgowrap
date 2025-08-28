@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -34,14 +35,48 @@ type voiceConnection struct {
 	conn      *websocket.Conn
 	intents   int
 	ready     bool
+	udpConn   *net.UDPConn
 }
 
-func (s Session) DisconnectFromVoice(guildId string) {
+func (s *Session) DisconnectFromVoice(guildId string) {
 	fmt.Printf("All voice connections: %v\n", s.voiceConnections)
 	vc := s.getVoiceConnection(guildId)
 	vc.closeVoiceSocketConnection()
 	//delete(s.voiceConnections, guildId)
 	fmt.Printf("All voice connections: %v\n", s.voiceConnections)
+}
+
+type SpeakingPayload struct {
+	Speaking int `json:"speaking"`
+	Delay    int `json:"delay"`
+	Ssrc     int `json:"ssrc"`
+}
+
+func (s *Session) SetSpeakingWrapperTest(guildId string, speaking bool) bool {
+	vc := s.getVoiceConnection(guildId)
+	if vc == nil {
+		log.Printf("No voice connection found for guild %s", guildId)
+		return false
+	}
+	return vc.SetSpeaking(speaking)
+}
+
+func (v *voiceConnection) SetSpeaking(speaking bool) bool {
+	if v.conn == nil {
+		log.Printf("[VC] No conn is available for guild %s\n", v.guildId)
+		return false
+	}
+	fmt.Println("VC Session: ", v.sessionId, "Channel: ", v.channelID, "Endpoint: ", v.endpoint, "Speaking: ", speaking, "")
+	speakingData := GatewayPayload{
+		Op:   5,
+		Data: SpeakingPayload{Speaking: 1, Delay: 0, Ssrc: 1},
+	}
+	if err := v.conn.WriteJSON(speakingData); err != nil {
+		log.Printf("Error sending SPEAKING for voice channel: %v\n", err)
+		return false
+	}
+	log.Printf("[VC] Sent SPEAKING for guild %s\n", v.guildId)
+	return true
 }
 
 func (v voiceConnection) closeVoiceSocketConnection() {
@@ -61,7 +96,7 @@ func (v voiceConnection) closeVoiceSocketConnection() {
 	}
 }
 
-func (v voiceConnection) establishVoiceSocketConnection() {
+func (v *voiceConnection) establishVoiceSocketConnection() {
 	if v.conn != nil {
 		_ = v.conn.Close()
 		v.ready = false
@@ -89,27 +124,144 @@ func (v voiceConnection) establishVoiceSocketConnection() {
 		for {
 			var payload GatewayPayload
 			if err := v.conn.ReadJSON(&payload); err != nil {
-				log.Fatalf("Failed to read voice payload: %v\n", err)
+				log.Printf("Failed to read voice payload: %v\n", err)
 			}
+
+			fmt.Println("[VC]", v.guildId, "Type: ", payload.Type, "Op: ", payload.Op, " Data: ", payload.Data, "")
 			switch payload.Op {
 			case OpHello:
 				v.ready = true
 				data := payload.Data.(map[string]interface{})
 				heartbeatInterval := int(data["heartbeat_interval"].(float64))
 				go startHeartbeat(v.conn, heartbeatInterval)
+
+			case OpDispatch:
+				if payload.Type != TypeReady {
+					continue
+				}
+				fmt.Println("[VC] Connecting with UDP for guild ", v.guildId, "with endpint", v.endpoint)
+				//if err := v.establishUDPConnection(); err != nil {
+				//	fmt.Println("[VCUDP]", v.guildId, "Failed to establish UDP connection: ", err)
+				//}
 			}
-			fmt.Println(v.guildId, "payload: ", payload, "")
 		}
 	}()
 }
 
+func (v *voiceConnection) establishUDPConnection() error {
+	if v.endpoint == "" {
+		return errors.New("no endpoint available for UDP connection")
+	}
+
+	// Remove the port from endpoint if present and add the voice port
+	host := v.endpoint
+	if host[len(host)-1] == ':' {
+		host = host[:len(host)-1]
+	}
+
+	// Discord voice uses port 80 for UDP
+	udpAddr, err := net.ResolveUDPAddr("udp", host+":80")
+	if err != nil {
+		return fmt.Errorf("failed to resolve UDP address: %v", err)
+	}
+
+	// Establish UDP connection
+	conn, err := net.DialUDP("udp", nil, udpAddr)
+	if err != nil {
+		return fmt.Errorf("failed to establish UDP connection: %v", err)
+	}
+
+	v.udpConn = conn
+	log.Printf("UDP connection established to %s\n", udpAddr.String())
+
+	// Perform IP discovery handshake
+	if err := v.performIPDiscovery(); err != nil {
+		return fmt.Errorf("IP discovery failed: %v", err)
+	}
+
+	// Start UDP data reading loop
+	go v.readUDPData()
+
+	return nil
+}
+
+// Add this new method to read and print UDP data
+func (v *voiceConnection) readUDPData() {
+	if v.udpConn == nil {
+		log.Printf("UDP connection is nil, cannot start reading\n")
+		return
+	}
+
+	buffer := make([]byte, 1024)
+
+	for {
+		n, err := v.udpConn.Read(buffer)
+		if err != nil {
+			log.Printf("Error reading UDP data for guild %s: %v\n", v.guildId, err)
+			break
+		}
+
+		if n > 0 {
+			fmt.Printf("UDP Data received for guild %s (%d bytes): %x\n", v.guildId, n, buffer[:n])
+
+			// If you want to see the raw bytes as well
+			fmt.Printf("UDP Data as bytes: %v\n", buffer[:n])
+		}
+	}
+
+	log.Printf("UDP reading loop ended for guild %s\n", v.guildId)
+}
+
+func (v *voiceConnection) performIPDiscovery() error {
+	if v.udpConn == nil {
+		return errors.New("UDP connection not established")
+	}
+
+	// Create IP discovery packet
+	packet := make([]byte, 70)
+	// Packet type (IP Discovery)
+	packet[0] = 0x00
+	packet[1] = 0x01
+	// Length (70 bytes)
+	packet[2] = 0x00
+	packet[3] = 0x46
+	// SSRC (we'll use 1 for now)
+	packet[4] = 0x00
+	packet[5] = 0x00
+	packet[6] = 0x00
+	packet[7] = 0x01
+
+	// Send IP discovery packet
+	_, err := v.udpConn.Write(packet)
+	if err != nil {
+		return fmt.Errorf("failed to send IP discovery packet: %v", err)
+	}
+
+	// Read response
+	response := make([]byte, 70)
+	_, err = v.udpConn.Read(response)
+	if err != nil {
+		return fmt.Errorf("failed to read IP discovery response: %v", err)
+	}
+
+	// Extract IP and port from response
+	ip := string(response[4:68])
+	ip = ip[:len(ip)-1] // Remove null terminator
+	port := int(response[68])<<8 | int(response[69])
+
+	log.Printf("IP Discovery complete - IP: %s, Port: %d\n", ip, port)
+
+	return nil
+}
+
 // Either gets the existing connection or creates a new one if it doesn't exist
-func (s Session) getVoiceConnection(guildId string) voiceConnection {
+func (s *Session) getVoiceConnection(guildId string) *voiceConnection {
 	if voice, exists := s.voiceConnections[guildId]; exists {
 		log.Printf("Found voice connection for guild %s\n", guildId)
-		return *voice
+		log.Println("[Voice channel] Conn exists:", voice.conn)
+		return voice
 	}
-	log.Printf("Creating new voice connection for", guildId)
+	log.Printf("Creating new voice connection for %s\n", guildId)
 	vc := voiceConnection{
 		guildId:   guildId,
 		sessionId: "",
@@ -119,7 +271,7 @@ func (s Session) getVoiceConnection(guildId string) voiceConnection {
 		token:     s.Token,
 	}
 	s.voiceConnections[guildId] = &vc
-	return vc
+	return &vc
 }
 
 // https://discord.com/developers/docs/events/gateway-events#receive-events
@@ -220,6 +372,10 @@ const (
 	OpHeartbeatACK            = 11   // receive - Sent in response to receiving a heartbeat to acknowledge that it has been received.
 	OpRequestSoundboardSounds = 31   // send - Request information about soundboard sounds in a set of guilds.
 	OpClose                   = 1000 // send - Send the connection
+)
+
+const (
+	OpVoiceSpeaking = 5
 )
 
 const (
@@ -336,6 +492,7 @@ func (s Session) GetMessage() (string, MessageCreate, error) {
 		}
 		vc := s.getVoiceConnection(vsu.GuildId)
 		vc.endpoint = vsu.Endpoint
+		vc.token = vsu.Token
 
 		return payload.Type, msg, nil
 	}
@@ -365,7 +522,7 @@ func New(token string, intents int) (*Session, error) {
 		},
 	}
 	if err := conn.WriteJSON(identify); err != nil {
-		log.Printf("Error sending IDENTIFY: %v\n", err)
+		log.Printf("error sending IDENTIFY: %v\n", err)
 	}
 
 	var payload GatewayPayload
@@ -374,7 +531,7 @@ func New(token string, intents int) (*Session, error) {
 	}
 
 	if payload.Op != OpHello {
-		return nil, errors.New("Invalid starting operator retrieved!")
+		return nil, errors.New("invalid starting operator retrieved")
 	}
 	data := payload.Data.(map[string]interface{})
 	heartbeatInterval := int(data["heartbeat_interval"].(float64))
@@ -423,7 +580,7 @@ type sendMessage struct {
 	Content string `json:"content"`
 }
 
-func (s Session) SendMessage(channelID string, content string) error {
+func (s *Session) SendMessage(channelID string, content string) error {
 	fmt.Printf("Sending \"%s\" to channel %s\n", content, channelID)
 	url := fmt.Sprintf("%s/channels/%s/messages", apiBase, channelID)
 	msg := sendMessage{Content: content}
@@ -434,7 +591,7 @@ func (s Session) SendMessage(channelID string, content string) error {
 	return s.httpRequestNoResponse("POST", url, body)
 }
 
-func (s Session) httpRequestAndResponse(method string, url string, body []byte) (string, error) {
+func (s *Session) httpRequestAndResponse(method string, url string, body []byte) (string, error) {
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
 	if err != nil {
 		return "", err
@@ -456,7 +613,7 @@ func (s Session) httpRequestAndResponse(method string, url string, body []byte) 
 	return string(recvBody), nil
 }
 
-func (s Session) httpRequestNoResponse(method string, url string, body []byte) error {
+func (s *Session) httpRequestNoResponse(method string, url string, body []byte) error {
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
 	if err != nil {
 		return err
@@ -472,7 +629,7 @@ func (s Session) httpRequestNoResponse(method string, url string, body []byte) e
 	return nil
 }
 
-func (s Session) findUserChannelIdInGuild(guildId string, userId string) string {
+func (s *Session) findUserChannelIdInGuild(guildId string, userId string) string {
 	type voiceState struct {
 		ChannelID string `json:"channel_id"`
 	}
@@ -495,7 +652,7 @@ func (s Session) findUserChannelIdInGuild(guildId string, userId string) string 
 	return vs.ChannelID
 }
 
-func (s Session) ConnectToVoice(guildId string, userId string) {
+func (s *Session) ConnectToVoice(guildId string, userId string) {
 	// https://discord.com/developers/docs/topics/voice-connections#retrieving-voice-server-information
 	channelId := s.findUserChannelIdInGuild(guildId, userId)
 
