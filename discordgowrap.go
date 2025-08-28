@@ -1,6 +1,6 @@
-/*
-Custom Discord API using websockets. Main focus here is parallel voice channel connections
-*/
+// Package discordgowrap
+// Discord API wrapper for Go
+// Github: https://www.github.com/skarkii/discordgowrap
 package discordgowrap
 
 import (
@@ -63,7 +63,7 @@ func (v voiceConnection) closeVoiceSocketConnection() {
 
 func (v voiceConnection) establishVoiceSocketConnection() {
 	if v.conn != nil {
-		v.conn.Close()
+		_ = v.conn.Close()
 		v.ready = false
 	}
 	dialer := websocket.DefaultDialer
@@ -122,8 +122,66 @@ func (s Session) getVoiceConnection(guildId string) voiceConnection {
 	return vc
 }
 
+// https://discord.com/developers/docs/events/gateway-events#receive-events
 const (
-	// https://discord-intents-calculator.vercel.app/
+	TypeChannelCreate                 = "CHANNEL_CREATE"
+	TypeChannelUpdate                 = "CHANNEL_UPDATE"
+	TypeChannelDelete                 = "CHANNEL_DELETE"
+	TypeChannelPinsUpdate             = "CHANNEL_PINS_UPDATE"
+	TypeThreadCreate                  = "THREAD_CREATE"
+	TypeThreadUpdate                  = "THREAD_UPDATE"
+	TypeThreadDelete                  = "THREAD_DELETE"
+	TypeThreadListSync                = "THREAD_LIST_SYNC"
+	TypeThreadMemberUpdate            = "THREAD_MEMBER_UPDATE"
+	TypeThreadMembersUpdate           = "THREAD_MEMBERS_UPDATE"
+	TypeGuildCreate                   = "GUILD_CREATE"
+	TypeGuildUpdate                   = "GUILD_UPDATE"
+	TypeGuildDelete                   = "GUILD_DELETE"
+	TypeGuildBanAdd                   = "GUILD_BAN_ADD"
+	TypeGuildBanRemove                = "GUILD_BAN_REMOVE"
+	TypeGuildEmojisUpdate             = "GUILD_EMOJIS_UPDATE"
+	TypeGuildStickersUpdate           = "GUILD_STICKERS_UPDATE"
+	TypeGuildIntegrationsUpdate       = "GUILD_INTEGRATIONS_UPDATE"
+	TypeGuildMemberAdd                = "GUILD_MEMBER_ADD"
+	TypeGuildMemberRemove             = "GUILD_MEMBER_REMOVE"
+	TypeGuildMemberUpdate             = "GUILD_MEMBER_UPDATE"
+	TypeGuildMembersChunk             = "GUILD_MEMBERS_CHUNK"
+	TypeGuildRoleCreate               = "GUILD_ROLE_CREATE"
+	TypeGuildRoleUpdate               = "GUILD_ROLE_UPDATE"
+	TypeGuildRoleDelete               = "GUILD_ROLE_DELETE"
+	TypeGuildScheduledEventCreate     = "GUILD_SCHEDULED_EVENT_CREATE"
+	TypeGuildScheduledEventUpdate     = "GUILD_SCHEDULED_EVENT_UPDATE"
+	TypeGuildScheduledEventDelete     = "GUILD_SCHEDULED_EVENT_DELETE"
+	TypeGuildScheduledEventUserAdd    = "GUILD_SCHEDULED_EVENT_USER_ADD"
+	TypeGuildScheduledEventUserRemove = "GUILD_SCHEDULED_EVENT_USER_REMOVE"
+	TypeIntegrationCreate             = "INTEGRATION_CREATE"
+	TypeIntegrationUpdate             = "INTEGRATION_UPDATE"
+	TypeIntegrationDelete             = "INTEGRATION_DELETE"
+	TypeInteractionCreate             = "INTERACTION_CREATE"
+	TypeInviteCreate                  = "INVITE_CREATE"
+	TypeInviteDelete                  = "INVITE_DELETE"
+	TypeMessageCreate                 = "MESSAGE_CREATE"
+	TypeMessageUpdate                 = "MESSAGE_UPDATE"
+	TypeMessageDelete                 = "MESSAGE_DELETE"
+	TypeMessageDeleteBulk             = "MESSAGE_DELETE_BULK"
+	TypeMessageReactionAdd            = "MESSAGE_REACTION_ADD"
+	TypeMessageReactionRemove         = "MESSAGE_REACTION_REMOVE"
+	TypeMessageReactionRemoveAll      = "MESSAGE_REACTION_REMOVE_ALL"
+	TypeMessageReactionRemoveEmoji    = "MESSAGE_REACTION_REMOVE_EMOJI"
+	TypePresenceUpdate                = "PRESENCE_UPDATE"
+	TypeReady                         = "READY"
+	TypeStageInstanceCreate           = "STAGE_INSTANCE_CREATE"
+	TypeStageInstanceUpdate           = "STAGE_INSTANCE_UPDATE"
+	TypeStageInstanceDelete           = "STAGE_INSTANCE_DELETE"
+	TypeTypingStart                   = "TYPING_START"
+	TypeUserUpdate                    = "USER_UPDATE"
+	TypeVoiceStateUpdate              = "VOICE_STATE_UPDATE"
+	TypeVoiceServerUpdate             = "VOICE_SERVER_UPDATE"
+	TypeWebhooksUpdate                = "WEBHOOKS_UPDATE"
+)
+
+// https://discord-intents-calculator.vercel.app/
+const (
 	IntentGuilds                      = 1 << 0
 	IntentGuildMembers                = 1 << 1
 	IntentGuildModeration             = 1 << 2
@@ -147,8 +205,8 @@ const (
 	IntentDirectMessagePolls          = 1 << 25
 )
 
+// https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-gateway-opcodes
 const (
-	// https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-gateway-opcodes
 	OpDispatch                = 0    // receive - An event was dispatched.
 	OpHeartbeat               = 1    // send/receive - Fired periodically by the client to keep the connection alive.
 	OpIdentify                = 2    // send - Starts a new session during the initial handshake.
@@ -249,17 +307,17 @@ func (s Session) GetMessage() (string, MessageCreate, error) {
 	}
 
 	switch payload.Type {
-	case "MESSAGE_CREATE":
+	case TypeMessageCreate:
 		data, _ := json.Marshal(payload.Data)
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return payload.Type, msg, err
 		}
 		return payload.Type, msg, nil
-	case "MESSAGE_UPDATE":
+	case TypeMessageUpdate:
 		return payload.Type, msg, nil
-	case "GUILD_CREATE":
+	case TypeGuildCreate:
 		return payload.Type, msg, nil
-	case "VOICE_STATE_UPDATE":
+	case TypeVoiceStateUpdate:
 		var vsu VoiceStateUpdate
 		data, _ := json.Marshal(payload.Data)
 		if err := json.Unmarshal(data, &vsu); err != nil {
@@ -270,7 +328,7 @@ func (s Session) GetMessage() (string, MessageCreate, error) {
 		vc.channelID = vsu.ChannelId
 		vc.establishVoiceSocketConnection()
 		return payload.Type, msg, nil
-	case "VOICE_SERVER_UPDATE":
+	case TypeVoiceServerUpdate:
 		var vsu VoiceServerUpdate
 		data, _ := json.Marshal(payload.Data)
 		if err := json.Unmarshal(data, &vsu); err != nil {
@@ -325,7 +383,7 @@ func New(token string, intents int) (*Session, error) {
 		if err := conn.ReadJSON(&payload); err != nil {
 			return nil, err
 		}
-		if payload.Type == "READY" {
+		if payload.Type == TypeReady {
 			break
 		}
 	}
@@ -378,11 +436,11 @@ func (s Session) SendMessage(channelID string, content string) error {
 
 func (s Session) httpRequestAndResponse(method string, url string, body []byte) (string, error) {
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
-	req.Header.Set("Authorization", "Bot "+s.Token)
-	req.Header.Set("Content-Type", "application/json")
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("Authorization", "Bot "+s.Token)
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -400,11 +458,11 @@ func (s Session) httpRequestAndResponse(method string, url string, body []byte) 
 
 func (s Session) httpRequestNoResponse(method string, url string, body []byte) error {
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
-	req.Header.Set("Authorization", "Bot "+s.Token)
-	req.Header.Set("Content-Type", "application/json")
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Authorization", "Bot "+s.Token)
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -437,8 +495,8 @@ func (s Session) findUserChannelIdInGuild(guildId string, userId string) string 
 	return vs.ChannelID
 }
 
-// https://discord.com/developers/docs/topics/voice-connections#retrieving-voice-server-information
 func (s Session) ConnectToVoice(guildId string, userId string) {
+	// https://discord.com/developers/docs/topics/voice-connections#retrieving-voice-server-information
 	channelId := s.findUserChannelIdInGuild(guildId, userId)
 
 	if channelId == "" {
