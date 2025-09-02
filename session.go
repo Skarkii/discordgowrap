@@ -128,10 +128,6 @@ const (
 )
 
 const (
-	OpVoiceSpeaking = 5
-)
-
-const (
 	gateway = "wss://gateway.discord.gg/?v=10&encoding=json"
 	apiBase = "https://discord.com/api/v10"
 )
@@ -187,6 +183,7 @@ type VoiceStateUpdate struct {
 	GuildId   string `json:"guild_id"`
 	ChannelId string `json:"channel_id"`
 	SessionId string `json:"session_id"`
+	Uid       string `json:"user_id"`
 }
 
 type sendMessage struct {
@@ -204,7 +201,6 @@ func (s *Session) GetMessage() (string, MessageCreate, error) {
 	if payload.Op == OpHeartbeatACK {
 		return "", msg, nil
 	}
-
 	switch payload.Type {
 	case TypeMessageCreate:
 		data, _ := json.Marshal(payload.Data)
@@ -217,6 +213,7 @@ func (s *Session) GetMessage() (string, MessageCreate, error) {
 	case TypeGuildCreate:
 		return payload.Type, msg, nil
 	case TypeVoiceStateUpdate:
+		fmt.Printf("Voice state update: %v\n", payload.Data)
 		var vsu VoiceStateUpdate
 		data, _ := json.Marshal(payload.Data)
 		if err := json.Unmarshal(data, &vsu); err != nil {
@@ -225,17 +222,20 @@ func (s *Session) GetMessage() (string, MessageCreate, error) {
 		vc := s.getVoiceConnection(vsu.GuildId)
 		vc.sessionId = vsu.SessionId
 		vc.channelID = vsu.ChannelId
-		vc.establishVoiceSocketConnection()
+		vc.uid = vsu.Uid
 		return payload.Type, msg, nil
 	case TypeVoiceServerUpdate:
+		fmt.Printf("Voice server update: %v\n", payload.Data)
 		var vsu VoiceServerUpdate
 		data, _ := json.Marshal(payload.Data)
 		if err := json.Unmarshal(data, &vsu); err != nil {
 			return payload.Type, msg, err
 		}
 		vc := s.getVoiceConnection(vsu.GuildId)
-		vc.endpoint = vsu.Endpoint
+		vc.endpoint = fmt.Sprintf("wss://%s", vsu.Endpoint)
 		vc.token = vsu.Token
+
+		vc.establishVoiceSocketConnection()
 
 		return payload.Type, msg, nil
 	}
@@ -304,7 +304,7 @@ func (s *Session) findUserChannelIdInGuild(guildId string, userId string) string
 		log.Printf("findUserChannelIdInGuild: request error: %v\n", err)
 		return ""
 	}
-	fmt.Println("Find user response: ", respBody)
+	//fmt.Println("[S] Find user response: ", respBody)
 
 	var vs voiceState
 	if err := json.Unmarshal([]byte(respBody), &vs); err != nil {
@@ -335,22 +335,13 @@ func (s *Session) ConnectToVoice(guildId string, userId string) {
 	}
 
 	if err := s.conn.WriteJSON(payload); err != nil {
-		log.Printf("Error sending VOICE_STATE_UPDATE: %v\n", err)
+		log.Printf("[S] Error sending VOICE_STATE_UPDATE: %v\n", err)
 	}
 
 }
 func (s *Session) Exit() error {
 	// Keep this for now if more things are needed to close.
 	return s.disconnect()
-}
-
-func (s *Session) disconnect() error {
-	// Closes the connection server side
-	disc := GatewayPayload{
-		Op:   OpClose,
-		Data: nil,
-	}
-	return s.conn.WriteJSON(disc)
 }
 
 func (s *Session) SetSpeakingWrapperTest(guildId string, speaking bool) bool {
@@ -365,16 +356,17 @@ func (s *Session) SetSpeakingWrapperTest(guildId string, speaking bool) bool {
 // Either gets the existing connection or creates a new one if it doesn't exist
 func (s *Session) getVoiceConnection(guildId string) *voiceConnection {
 	if voice, exists := s.voiceConnections[guildId]; exists {
-		log.Printf("Found voice connection for guild %s\n", guildId)
-		log.Println("[Voice channel] Conn exists:", voice.conn)
+		fmt.Printf("[S] Found voice connection for guild %s\n", guildId)
+		log.Println("[S] Voice channel Conn:", voice.conn)
 		return voice
 	}
-	log.Printf("Creating new voice connection for %s\n", guildId)
+	fmt.Printf("[S] Creating new voice connection for %s\n", guildId)
 	vc := voiceConnection{
 		guildId:   guildId,
 		sessionId: "",
 		endpoint:  "",
 		channelID: "",
+		uid:       "",
 		conn:      nil,
 		token:     s.Token,
 	}
@@ -388,4 +380,13 @@ func (s *Session) DisconnectFromVoice(guildId string) {
 	vc.closeVoiceSocketConnection()
 	//delete(s.voiceConnections, guildId)
 	fmt.Printf("All voice connections: %v\n", s.voiceConnections)
+}
+
+func (s *Session) disconnect() error {
+	// Closes the connection server side
+	disc := GatewayPayload{
+		Op:   OpClose,
+		Data: nil,
+	}
+	return s.conn.WriteJSON(disc)
 }
