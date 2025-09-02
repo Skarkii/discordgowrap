@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
@@ -36,17 +37,39 @@ const (
 	OpVoiceDAVEMLSInvalidCommitWelcome     = 31 // client	Flag invalid commit or welcome, request re-add
 )
 
+const (
+	//	Code	Description	Explanation
+	//
+	// 4001	Unknown opcode	You sent an invalid opcode.
+	// 4002	Failed to decode payload	You sent an invalid payload in your identifying to the Gateway.
+	// 4003	Not authenticated	You sent a payload before identifying with the Gateway.
+	// 4004	Authentication failed	The token you sent in your identify payload is incorrect.
+	// 4005	Already authenticated	You sent more than one identify payload. Stahp.
+	// 4006	Session no longer valid	Your session is no longer valid.
+	// 4009	Session timeout	Your session has timed out.
+	// 4011	Server not found	We can't find the server you're trying to connect to.
+	// 4012	Unknown protocol	We didn't recognize the protocol you sent.
+	// 4014	Disconnected	Disconnect individual client (you were kicked, the main gateway session was dropped, etc.). Should not reconnect.
+	// 4015	Voice server crashed	The server crashed. Our bad! Try resuming.
+	// 4016	Unknown encryption mode	We didn't recognize your encryption.
+	// 4020	Bad request	You sent a malformed request
+	// 4021	Disconnected: Rate Limited	Disconnect due to rate limit exceeded. Should not reconnect.
+	// 4022	Disconnected: Call Terminated	Disconnect all clients due to call terminated (channel deleted, voice server changed, etc.). Should not reconnect.
+	VoiceDisconnected = 4022
+)
+
 type voiceConnection struct {
-	token     string
-	guildId   string
-	sessionId string
-	endpoint  string
-	uid       string
-	channelID string
-	conn      *websocket.Conn
-	intents   int
-	ready     bool
-	udpConn   *net.UDPConn
+	token      string
+	guildId    string
+	sessionId  string
+	endpoint   string
+	uid        string
+	channelID  string
+	conn       *websocket.Conn
+	connWmutex sync.Mutex
+	intents    int
+	ready      bool
+	udpConn    *net.UDPConn
 }
 
 type voiceChannelPost struct {
@@ -71,6 +94,8 @@ func (v *voiceConnection) SetSpeaking(speaking bool) bool {
 		Op:   5,
 		Data: voiceChannelSpeaking{speaking, 0},
 	}
+	v.connWmutex.Lock()
+	defer v.connWmutex.Unlock()
 	if err := v.conn.WriteJSON(speakingData); err != nil {
 		log.Printf("[VC] Error sending SPEAKING for voice channel: %v\n", err)
 		return false
@@ -80,7 +105,7 @@ func (v *voiceConnection) SetSpeaking(speaking bool) bool {
 }
 
 func (v *voiceConnection) closeVoiceSocketConnection() {
-	fmt.Println("[VC] Closing voice connection")
+	fmt.Println("[VC] Closing voice connection for guild:", v.guildId)
 	disc := GatewayPayload{
 		Op:   OpVoiceStateUpdate,
 		Data: voiceChannelPost{&v.guildId, nil, true, false},
@@ -88,10 +113,12 @@ func (v *voiceConnection) closeVoiceSocketConnection() {
 	fmt.Printf("disc: %v\n", disc)
 
 	if v.conn == nil {
-		log.Printf("[VC] Conn is nil")
+		log.Println("[VC] Conn is nil")
 		return
 	}
 
+	v.connWmutex.Lock()
+	defer v.connWmutex.Unlock()
 	err := v.conn.WriteJSON(disc)
 	if err != nil {
 		log.Printf("[VC] Error sending DISCONNECT for voice channel: %v\n", err)
@@ -112,7 +139,6 @@ func (v *voiceConnection) establishVoiceSocketConnection() {
 	}
 	dialer := websocket.DefaultDialer
 	var err error
-	fmt.Printf("[VC] Endpoint: %s\n", v.endpoint)
 	v.conn, _, err = dialer.Dial(v.endpoint, nil)
 
 	if err != nil {
@@ -131,27 +157,39 @@ func (v *voiceConnection) establishVoiceSocketConnection() {
 		},
 	}
 	fmt.Printf("[VC] Identify: %v\n", identify)
+
+	v.connWmutex.Lock()
 	if err := v.conn.WriteJSON(identify); err != nil {
 		log.Printf("Error sending IDENTIFY for voice channel: %v\n", err)
 	}
+	v.connWmutex.Unlock()
 
 	go func() {
 		for {
 			var payload GatewayPayload
 			if err := v.conn.ReadJSON(&payload); err != nil {
-				log.Printf("Failed to read voice payload: %v\n", err)
+				if websocket.IsCloseError(err, 4014) {
+					break
+				}
+				log.Printf("[VC]Failed to read voice payload: %v\n", err)
 				break
 			}
 
-			fmt.Println("[VC]", v.guildId, "Type: ", payload.Type, "Op: ", payload.Op, " Data: ", payload.Data, "")
+			//fmt.Println("[VC]", v.guildId, "Type: ", payload.Type, "Op: ", payload.Op, " Data: ", payload.Data, "")
+			//fmt.Println("[VC] Received payload: ", payload)
+			fmt.Println("[VC] Received payload: OP", payload.Op, "Seq: ", payload.Seq, "Data:", payload.Data, "")
 			switch payload.Op {
 			case OpVoiceHello:
-				v.ready = true
 				data := payload.Data.(map[string]interface{})
 				heartbeatInterval := int(data["heartbeat_interval"].(float64))
-				go voiceStartHeartbeat(v.conn, heartbeatInterval)
-				fmt.Println("[VC] Started Heartbeat with interval: ", heartbeatInterval, "")
-
+				go v.voiceStartHeartbeat(heartbeatInterval)
+			case OpVoiceHeartbeatAck:
+				fmt.Println("[VC] Received heartbeat ack")
+			case OpVoiceReady:
+				fmt.Println("[VC] Received READY")
+				v.ready = true
+			case OpVoiceClientDisconnect:
+				fmt.Println("[VC] Received CLIENT DISCONNECT")
 			}
 		}
 		fmt.Println("[VC] Voice connection closed")

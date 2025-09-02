@@ -157,7 +157,7 @@ type ReadyCreate struct {
 type GatewayPayload struct {
 	Op   int         `json:"op"`
 	Data interface{} `json:"d"`
-	Seq  int         `json:"s,omitempty"`
+	Seq  *int64      `json:"s"`
 	Type string      `json:"t,omitempty"`
 }
 
@@ -218,6 +218,14 @@ func (s *Session) GetMessage() (string, MessageCreate, error) {
 		data, _ := json.Marshal(payload.Data)
 		if err := json.Unmarshal(data, &vsu); err != nil {
 			return payload.Type, msg, err
+		}
+		if vsu.Uid != s.Bot.ID {
+			fmt.Printf("Ignoring voice state update for user %s\n", vsu.Uid)
+			return payload.Type, msg, nil
+		}
+		if vsu.ChannelId == "" {
+			fmt.Printf("Ignoring leave voice state update for user\n")
+			return payload.Type, msg, nil
 		}
 		vc := s.getVoiceConnection(vsu.GuildId)
 		vc.sessionId = vsu.SessionId
@@ -357,7 +365,7 @@ func (s *Session) SetSpeakingWrapperTest(guildId string, speaking bool) bool {
 func (s *Session) getVoiceConnection(guildId string) *voiceConnection {
 	if voice, exists := s.voiceConnections[guildId]; exists {
 		fmt.Printf("[S] Found voice connection for guild %s\n", guildId)
-		log.Println("[S] Voice channel Conn:", voice.conn)
+		//log.Println("[S] Voice channel Conn:", voice.conn)
 		return voice
 	}
 	fmt.Printf("[S] Creating new voice connection for %s\n", guildId)
@@ -376,9 +384,20 @@ func (s *Session) getVoiceConnection(guildId string) *voiceConnection {
 
 func (s *Session) DisconnectFromVoice(guildId string) {
 	fmt.Printf("All voice connections: %v\n", s.voiceConnections)
-	vc := s.getVoiceConnection(guildId)
-	vc.closeVoiceSocketConnection()
-	//delete(s.voiceConnections, guildId)
+	//vc := s.getVoiceConnection(guildId)
+	//vc.closeVoiceSocketConnection()
+
+	disc := GatewayPayload{
+		Op:   OpVoiceStateUpdate,
+		Data: voiceChannelPost{&guildId, nil, true, false},
+	}
+
+	err := s.conn.WriteJSON(disc)
+	if err != nil {
+		log.Printf("[VC] Error sending DISCONNECT for voice channel: %v\n", err)
+	}
+
+	delete(s.voiceConnections, guildId)
 	fmt.Printf("All voice connections: %v\n", s.voiceConnections)
 }
 
