@@ -11,28 +11,28 @@ import (
 
 const (
 	// Code	Name	Sent By	Description	Binary
-	OpVoiceIdentify                        = 0  //	client	Begin a voice websocket connection.
-	OpVoiceSelect                          = 1  // Protocol	client	Select the voice protocol.
-	OpVoiceReady                           = 2  //	server	Complete the websocket handshake.
-	OpVoiceHeartbeat                       = 3  //	client	Keep the websocket connection alive.
-	OpVoiceSession                         = 4  // Description	server	Describe the session.
-	OpVoiceSpeaking                        = 5  //	client and server	Indicate which users are speaking.
+	OpVoiceIdentify                        = 0  // client	Begin a voice websocket connection.
+	OpVoiceSelectProtocol                  = 1  // client	Select the voice protocol.
+	OpVoiceReady                           = 2  // server	Complete the websocket handshake.
+	OpVoiceHeartbeat                       = 3  // client	Keep the websocket connection alive.
+	OpVoiceSessionDescription              = 4  // server	Describe the session.
+	OpVoiceSpeaking                        = 5  // client/server	Indicate which users are speaking.
 	OpVoiceHeartbeatAck                    = 6  // server	Sent to acknowledge a received client heartbeat.
-	OpVoiceResume                          = 7  //	client	Resume a connection.
-	OpVoiceHello                           = 8  //	server	Time to wait between sending heartbeats in milliseconds.
-	OpVoiceResumed                         = 9  //	server	Acknowledge a successful session resume.
-	OpVoiceClients                         = 11 // Connect	server	One or more clients have connected to the voice channel
-	OpVoiceClient                          = 13 // Disconnect	server	A client has disconnected from the voice channel
+	OpVoiceResume                          = 7  // client	Resume a connection.
+	OpVoiceHello                           = 8  // server	Time to wait between sending heartbeats in milliseconds.
+	OpVoiceResumed                         = 9  // server	Acknowledge a successful session resume.
+	OpVoiceClientsConnect                  = 11 // server	One or more clients have connected to the voice channel
+	OpVoiceClientDisconnect                = 13 // server	A client has disconnected from the voice channel
 	OpVoiceDAVEPrepareTransition           = 21 // server	A downgrade from the DAVE protocol is upcoming
 	OpVoiceDAVEExecuteTransition           = 22 // server	Execute a previously announced protocol transition
-	OpVoiceDAVETransition                  = 23 // Ready	client	Acknowledge readiness previously announced transition
+	OpVoiceDAVETransitionReady             = 23 // client	Acknowledge readiness previously announced transition
 	OpVoiceDAVEPrepareEpoch                = 24 // server	A DAVE protocol version or group change is upcoming
-	OpVoiceDAVEExternalMLSSender           = 25 // server	Credential and public key for MLS external sender	X
+	OpVoiceDAVEMLSExternalSender           = 25 // server	Credential and public key for MLS external sender	X
 	OpVoiceDAVEMLSKeyPackage               = 26 // client	MLS Key Package for pending group member	X
 	OpVoiceDAVEMLSProposals                = 27 // server	MLS Proposals to be appended or revoked	X
 	OpVoiceDAVEMLSCommitWelcome            = 28 // client	MLS Commit with optional MLS Welcome messages	X
-	OpVoiceDAVEMLSAnnounceCommitTransition = 29 //	server	MLS Commit to be processed for upcoming transition	X
-	OpVoiceDAVEMLSWelcome                  = 30 //server	 MLS Welcome to group for upcoming transition	X
+	OpVoiceDAVEMLSAnnounceCommitTransition = 29 // server	MLS Commit to be processed for upcoming transition	X
+	OpVoiceDAVEMLSWelcome                  = 30 // server	MLS Welcome to group for upcoming transition	X
 	OpVoiceDAVEMLSInvalidCommitWelcome     = 31 // client	Flag invalid commit or welcome, request re-add
 )
 
