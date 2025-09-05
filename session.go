@@ -197,9 +197,12 @@ func (s *Session) GetMessage() (string, MessageCreate, error) {
 		return "", msg, err
 	}
 
-	// Ignore heartbeat ACKs
+	// Ignore heartbeat ACKs for now
 	if payload.Op == OpHeartbeatACK {
 		return "", msg, nil
+	}
+	if payload.Op == OpReconnect {
+		// Implement reconnect here
 	}
 	switch payload.Type {
 	case TypeMessageCreate:
@@ -247,7 +250,7 @@ func (s *Session) GetMessage() (string, MessageCreate, error) {
 
 		return payload.Type, msg, nil
 	}
-	log.Printf("Unhandled message type: %s with data: %v\n", payload.Type, payload.Data)
+	log.Printf("Unhandled message type: %s with op %d data: %v\n", payload.Type, payload.Op, payload.Data)
 	return payload.Type, msg, nil
 }
 
@@ -361,6 +364,17 @@ func (s *Session) SetSpeakingWrapperTest(guildId string, speaking bool) bool {
 	return vc.SetSpeaking(speaking)
 }
 
+func (s *Session) PlayAudioWrapperTest(guildId string, filename string) {
+	vc := s.getVoiceConnection(guildId)
+	if vc == nil {
+		// Here we should join the voice channel if it doesn't exist
+		log.Printf("No voice connection found for guild %s", guildId)
+		return
+	}
+
+	vc.playAudio(filename)
+}
+
 // Either gets the existing connection or creates a new one if it doesn't exist
 func (s *Session) getVoiceConnection(guildId string) *voiceConnection {
 	if voice, exists := s.voiceConnections[guildId]; exists {
@@ -377,6 +391,7 @@ func (s *Session) getVoiceConnection(guildId string) *voiceConnection {
 		uid:       "",
 		conn:      nil,
 		token:     s.Token,
+		ssrc:      0,
 	}
 	s.voiceConnections[guildId] = &vc
 	return &vc

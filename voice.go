@@ -2,6 +2,8 @@
 package discordgowrap
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -69,7 +71,11 @@ type voiceConnection struct {
 	connWmutex sync.Mutex
 	intents    int
 	ready      bool
-	udpConn    *net.UDPConn
+
+	// Used for Voice Playback
+	udpConn *net.UDPConn
+	udpAddr *net.UDPAddr
+	ssrc    int
 }
 
 type voiceChannelPost struct {
@@ -80,8 +86,9 @@ type voiceChannelPost struct {
 }
 
 type voiceChannelSpeaking struct {
-	Speaking bool `json:"speaking"`
-	Delay    int  `json:"delay"`
+	Speaking int `json:"speaking"`
+	Delay    int `json:"delay"`
+	Ssrc     int `json:"ssrc"`
 }
 
 func (v *voiceConnection) SetSpeaking(speaking bool) bool {
@@ -91,8 +98,8 @@ func (v *voiceConnection) SetSpeaking(speaking bool) bool {
 	}
 	//fmt.Println("VC Session: ", v.sessionId, "Channel: ", v.channelID, "Endpoint: ", v.endpoint, "Speaking: ", speaking, "")
 	speakingData := GatewayPayload{
-		Op:   5,
-		Data: voiceChannelSpeaking{speaking, 0},
+		Op:   OpVoiceSpeaking,
+		Data: voiceChannelSpeaking{1, 0, 1},
 	}
 	v.connWmutex.Lock()
 	defer v.connWmutex.Unlock()
@@ -130,6 +137,12 @@ type VoiceIdentify struct {
 	UserID   string `json:"user_id"`
 	Session  string `json:"session_id"`
 	Token    string `json:"token"`
+}
+
+type VoiceOnReadyIdentify struct {
+	Ip   string `json:"ip"`
+	Port int    `json:"port"`
+	Ssrc int    `json:"ssrc"`
 }
 
 func (v *voiceConnection) establishVoiceSocketConnection() {
@@ -175,6 +188,8 @@ func (v *voiceConnection) establishVoiceSocketConnection() {
 				break
 			}
 
+			data, _ := json.Marshal(payload.Data)
+
 			//fmt.Println("[VC]", v.guildId, "Type: ", payload.Type, "Op: ", payload.Op, " Data: ", payload.Data, "")
 			//fmt.Println("[VC] Received payload: ", payload)
 			fmt.Println("[VC] Received payload: OP", payload.Op, "Seq: ", payload.Seq, "Data:", payload.Data, "")
@@ -186,7 +201,13 @@ func (v *voiceConnection) establishVoiceSocketConnection() {
 			case OpVoiceHeartbeatAck:
 				fmt.Println("[VC] Received heartbeat ack")
 			case OpVoiceReady:
-				fmt.Println("[VC] Received READY")
+				var msg VoiceOnReadyIdentify
+				if err := json.Unmarshal(data, &msg); err != nil {
+					fmt.Println("[VC] Error unmarshalling voice payload: ", err, "Data: ", string(data), "")
+					break
+				}
+				v.udpAddr = &net.UDPAddr{net.ParseIP(msg.Ip), msg.Port, ""}
+				v.ssrc = msg.Ssrc
 				v.ready = true
 			case OpVoiceClientDisconnect:
 				fmt.Println("[VC] Received CLIENT DISCONNECT")
@@ -194,4 +215,91 @@ func (v *voiceConnection) establishVoiceSocketConnection() {
 		}
 		fmt.Println("[VC] Voice connection closed")
 	}()
+}
+
+// https://discord.com/developers/docs/topics/voice-connections#establishing-a-voice-udp-connection
+func (v *voiceConnection) createUdpConnection() {
+	fmt.Println("[VC] Creating UDP connection for guild:", v.guildId)
+	if v.udpAddr == nil {
+		fmt.Println("[UDP] udpAddr is nil")
+		return
+	}
+	fmt.Printf("[UDP] Connecting to UDP addr: %s:%d\n", v.udpAddr.IP, v.udpAddr.Port)
+	var err error
+	v.udpConn, err = net.DialUDP("udp", nil, v.udpAddr)
+	if err != nil {
+		log.Printf("[UDP] Error creating UDP connection: %v\n", err)
+		return
+	}
+
+	v.udpIpDiscovery()
+
+	go func() {
+		data := make([]byte, 1440)
+		v.udpConn.ReadFromUDP(data)
+		fmt.Println("[UDP] Read from UDP connection: %", string(data), "")
+	}()
+
+}
+
+const (
+	IPDiscoveryRequest  = 0x1
+	IPDiscoveryResponse = 0x2
+)
+
+// https://discord.com/developers/docs/topics/voice-connections#ip-discovery
+func (v *voiceConnection) udpIpDiscovery() {
+	fmt.Println("[UDP] Running UDP IP discovery")
+	ssrc := uint32(v.ssrc)
+	packetSize := uint16(74)
+	discoveryPacket := make([]byte, packetSize)
+	binary.BigEndian.PutUint16(discoveryPacket[0:2], IPDiscoveryRequest)
+	binary.BigEndian.PutUint16(discoveryPacket[2:4], packetSize-4) // Length of packet without Type nad Length
+	binary.BigEndian.PutUint32(discoveryPacket[4:8], ssrc)
+
+	_, err := v.udpConn.Write(discoveryPacket)
+	if err != nil {
+		log.Printf("[UDP] Error writing UDP discovery packet: %v\n", err)
+		return
+	}
+	fmt.Println("[UDP] Wrote UDP discovery packet")
+
+	data := make([]byte, 1440)
+	size, _, err := v.udpConn.ReadFromUDP(data)
+	if err != nil {
+		log.Printf("[UDP] Error reading UDP discovery response: %v\n", err)
+		return
+	}
+	//fmt.Println("[UDP] Read from UDP connection: %", string(data), "")
+	ipEnd := 8
+	for ipEnd < size && data[ipEnd] != 0 {
+		ipEnd++
+	}
+	publicIP := string(data[8:ipEnd])
+	publicPort := binary.LittleEndian.Uint16(data[size-2 : size])
+	fmt.Printf("[UDP] Discovered IP: %s, Port: %d\n", publicIP, publicPort)
+
+	payload := GatewayPayload{
+		Op: OpVoiceSelectProtocol,
+		Data: map[string]interface{}{
+			"protocol": "udp",
+			"data": map[string]interface{}{
+				"address": publicIP,
+				"port":    publicPort,
+				"mode":    "aead_aes256_gcm_rtpsize",
+			},
+		},
+	}
+	v.connWmutex.Lock()
+	defer v.connWmutex.Unlock()
+	if err := v.conn.WriteJSON(payload); err != nil {
+		log.Printf("[VC] Error sending SELECT PROTOCOL for voice channel: %v\n", err)
+	}
+	fmt.Println("[VC] Sent SELECT PROTOCOL for voice channel")
+}
+
+func (v *voiceConnection) playAudio(filename string) {
+	if v.udpConn == nil {
+		v.createUdpConnection()
+	}
 }
